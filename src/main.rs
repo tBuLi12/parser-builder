@@ -100,33 +100,36 @@ impl<'s> Parser<'s> {
 
         loop {
             let Ok(value) = self.value() else {
-                break;
+                if let Ok(r_bracket) = self.punct(Punctuation::RBracket) {
+                    return Ok(values);
+                }
+                if let Ok(comma) = self.punct(Punctuation::Comma) {
+                    continue;
+                }
+                if self.recovery.contains(&self.current.kind()) {
+                    return Ok(values);
+                }
+                self.next();
+                continue;
             };
+
             values.push(value);
 
             let Ok(comma) = self.punct(Punctuation::Comma) else {
-                break;
+                if let Ok(r_bracket) = self.punct(Punctuation::RBracket) {
+                    return Ok(values);
+                }
+                if let Ok(value) = self.value() {
+                    values.push(value);
+                    continue;
+                }
+                if self.recovery.contains(&self.current.kind()) {
+                    return Ok(values);
+                }
+                self.next();
+                continue;
             };
         }
-
-        let r_bracket = match self.punct(Punctuation::RBracket) {
-            Ok(span) => span,
-            Err(_) => {
-                panic!("unexpected token");
-                // if self.recovery.contains(&self.current.kind()) {
-                //     self.lexer.current_position().extend_back(1)
-                // } else {
-                //     match self.current.kind() {
-                //         TokenKind::Eof => self.lexer.current_position().extend_back(1),
-                //         TokenKind::Keyword(_) => {}
-                //         TokenKind::Punctuation(_) => {}
-                //         _ => {}
-                //     }
-                // }
-            }
-        };
-
-        Ok(values)
     }
 
     fn field(&mut self) -> Result<(StringLit, Value), ()> {
