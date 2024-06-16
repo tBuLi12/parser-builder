@@ -56,26 +56,26 @@ pub enum Punctuation {
 
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 pub struct Span {
-    start: Position,
-    end: Position,
+    pub start: Position,
+    pub end: Position,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Ident {
-    span: Span,
-    value: Option<String>,
+    pub span: Span,
+    pub value: Option<String>,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Int {
-    span: Span,
-    value: u32,
+    pub span: Span,
+    pub value: u32,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct StringLit {
-    span: Span,
-    value: String,
+    pub span: Span,
+    pub value: String,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
