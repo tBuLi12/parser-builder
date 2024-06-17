@@ -25,7 +25,7 @@ struct Parser<'s> {
 enum Value {
     String(String),
     Array(Vec<Value>),
-    Object(Vec<(StringLit, Value)>),
+    Object(Vec<(String, Value)>),
     Number(u32),
 }
 
@@ -132,15 +132,15 @@ impl<'s> Parser<'s> {
         }
     }
 
-    fn field(&mut self) -> Result<(StringLit, Value), ()> {
+    fn field(&mut self) -> Result<(String, Value), ()> {
         let name = self.string()?;
         let colon = self.punct(Punctuation::Colon).unwrap();
         let value = self.value().unwrap();
 
-        Ok((name, value))
+        Ok((name.value, value))
     }
 
-    fn object(&mut self) -> Result<Vec<(StringLit, Value)>, ()> {
+    fn object(&mut self) -> Result<Vec<(String, Value)>, ()> {
         let l_brace = self.punct(Punctuation::LBrace)?;
 
         let mut fields = vec![];
