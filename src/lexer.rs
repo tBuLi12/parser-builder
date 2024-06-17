@@ -1,7 +1,10 @@
+use std::vec::IntoIter;
+
 pub struct Lexer<S> {
     messages: Vec<String>,
     source: S,
     current: Option<char>,
+    tokens: IntoIter<Token>,
     offset: u32,
     column: u32,
     line: u32,
@@ -155,17 +158,36 @@ impl Position {
 impl<S: Source> Lexer<S> {
     pub fn new(mut source: S) -> Self {
         let first = source.next();
-        Lexer {
+        let mut lexer = Lexer {
             messages: vec![],
+            tokens: vec![].into_iter(),
             source,
             current: first,
             offset: 0,
             column: 0,
             line: 0,
+        };
+
+        let mut tokens = vec![];
+
+        loop {
+            let token = lexer._next();
+            if token.kind() == TokenKind::Eof {
+                break;
+            }
+            tokens.push(token);
         }
+        lexer.tokens = tokens.into_iter();
+        lexer
     }
 
     pub fn next(&mut self) -> Token {
+        self.tokens
+            .next()
+            .unwrap_or_else(|| Token::Eof(self.current_position().extend_back(1)))
+    }
+
+    fn _next(&mut self) -> Token {
         loop {
             match self.current {
                 Some(c) if c.is_whitespace() => {
