@@ -1,4 +1,4 @@
-use std::{env, str::Chars};
+use std::{env, fs, str::Chars, time::Instant};
 
 use lexer::{Int, Keyword, Lexer, Punctuation, Source, Span, StringLit, Token, TokenKind};
 
@@ -171,11 +171,18 @@ impl<'s> Parser<'s> {
 }
 
 fn main() {
-    let text = env::args().nth(1).unwrap();
+    let path = env::args().nth(1).unwrap();
 
-    println!("{:?}", text);
+    let text = fs::read_to_string(&path).unwrap();
 
     let mut parser = Parser::new(&text);
 
     println!("{:?}", parser.value().unwrap());
+
+    let start = Instant::now();
+    for _ in 0..100 {
+        let mut parser = Parser::new(&text);
+        parser.value().unwrap();
+    }
+    println!("{:?}", start.elapsed());
 }
