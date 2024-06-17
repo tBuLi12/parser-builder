@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    process::exit,
     str::Chars,
     time::{Duration, Instant},
 };
@@ -25,7 +26,7 @@ struct Parser<'s> {
     current: lexer::Token,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Value {
     String(String),
     Array(Vec<Value>),
@@ -174,20 +175,195 @@ impl<'s> Parser<'s> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseArray {
+    state: ParseArrayState,
+    values: Vec<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParseArrayState {
+    Comma,
+    Value(ParseValue),
+}
+
+impl ParseArray {
+    fn push(mut self, token: Token) -> Result<Vec<Value>, Self> {
+        if self.state == ParseArrayState::Value(ParseValue::None)
+            && token.kind() == TokenKind::Punctuation(Punctuation::RBracket)
+        {
+            return Ok(self.values);
+        }
+
+        match self.state {
+            ParseArrayState::Comma => {
+                if token.kind() != TokenKind::Punctuation(Punctuation::Comma) {
+                    exit(1);
+                }
+                self.state = ParseArrayState::Value(ParseValue::None);
+                Err(self)
+            }
+            ParseArrayState::Value(inner) => {
+                match inner.push(token) {
+                    Ok(value) => {
+                        self.values.push(value);
+                        self.state = ParseArrayState::Comma;
+                    }
+                    Err(inner) => {
+                        self.state = ParseArrayState::Value(inner);
+                    }
+                }
+                Err(self)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseObject {
+    state: ParseObjectState,
+    fields: Vec<(String, Value)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParseObjectState {
+    Comma,
+    Field(ParseField),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParseField {
+    None,
+    Colon(String),
+    Value(String, ParseValue),
+}
+
+impl ParseField {
+    fn push(self, token: Token) -> Result<(String, Value), Self> {
+        match self {
+            ParseField::None => match token {
+                Token::String(s) => Err(Self::Colon(s.value)),
+                _ => exit(1),
+            },
+            ParseField::Colon(name) => {
+                if token.kind() != TokenKind::Punctuation(Punctuation::Colon) {
+                    exit(1);
+                }
+                Err(ParseField::Value(name, ParseValue::None))
+            }
+            ParseField::Value(name, inner) => match inner.push(token) {
+                Ok(value) => Ok((name, value)),
+                Err(inner) => Err(ParseField::Value(name, inner)),
+            },
+        }
+    }
+}
+
+impl ParseObject {
+    fn push(mut self, token: Token) -> Result<Vec<(String, Value)>, Self> {
+        if self.state == ParseObjectState::Field(ParseField::None)
+            && token.kind() == TokenKind::Punctuation(Punctuation::RBracket)
+        {
+            return Ok(self.fields);
+        }
+
+        match self.state {
+            ParseObjectState::Comma => {
+                if token.kind() != TokenKind::Punctuation(Punctuation::Comma) {
+                    exit(1);
+                }
+                self.state = ParseObjectState::Field(ParseField::None);
+                Err(self)
+            }
+            ParseObjectState::Field(inner) => {
+                match inner.push(token) {
+                    Ok(value) => {
+                        self.fields.push(value);
+                        self.state = ParseObjectState::Comma;
+                    }
+                    Err(inner) => {
+                        self.state = ParseObjectState::Field(inner);
+                    }
+                }
+                Err(self)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParseValue {
+    None,
+    Array(Box<ParseArray>),
+    Object(Box<ParseObject>),
+}
+
+impl ParseValue {
+    fn push(mut self, token: Token) -> Result<Value, Self> {
+        match self {
+            ParseValue::None => match token {
+                Token::String(s) => Ok(Value::String(s.value)),
+                Token::Int(i) => Ok(Value::Number(i.value)),
+                Token::Punctuation(Punctuation::LBracket, _) => {
+                    Err(Self::Array(Box::new(ParseArray {
+                        state: ParseArrayState::Value(ParseValue::None),
+                        values: vec![],
+                    })))
+                }
+                Token::Punctuation(Punctuation::LBrace, _) => {
+                    Err(Self::Object(Box::new(ParseObject {
+                        state: ParseObjectState::Field(ParseField::None),
+                        fields: vec![],
+                    })))
+                }
+                _ => exit(1),
+            },
+            ParseValue::Array(mut inner) => match inner.push(token) {
+                Ok(value) => Ok(Value::Array(value)),
+                Err(inner) => Err(Self::Array(Box::new(inner))),
+            },
+            ParseValue::Object(mut inner) => match inner.push(token) {
+                Ok(value) => Ok(Value::Object(value)),
+                Err(inner) => Err(Self::Object(Box::new(inner))),
+            },
+        }
+    }
+}
+
 fn main() {
     let path = env::args().nth(1).unwrap();
 
     let text = fs::read_to_string(&path).unwrap();
 
-    let mut parser = Parser::new(&text);
+    fn parse(text: &str) -> Value {
+        let mut lexer = Lexer::new(StringSource {
+            source: text.chars(),
+            offset: 0,
+        });
 
-    println!("{:?}", parser.value().unwrap());
+        let mut value_parser = ParseValue::None;
+        let value = loop {
+            match value_parser.push(lexer.next()) {
+                Ok(value) => {
+                    break value;
+                }
+                Err(inner) => {
+                    value_parser = inner;
+                }
+            }
+        };
+
+        value
+    }
+
+    let value = parse(&text);
+
+    println!("{:?}", value);
 
     let mut duration = Duration::ZERO;
     for _ in 0..100 {
-        let mut parser = Parser::new(&text);
         let start = Instant::now();
-        parser.value().unwrap();
+        parse(&text);
         duration += start.elapsed();
     }
     println!("{:?}", duration);
