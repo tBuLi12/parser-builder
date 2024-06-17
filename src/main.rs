@@ -11,19 +11,12 @@ mod lexer;
 
 struct StringSource<'s> {
     source: Chars<'s>,
-    offset: usize,
 }
 
 impl<'s> Source for StringSource<'s> {
     fn next(&mut self) -> Option<char> {
         self.source.next()
     }
-}
-
-struct Parser<'s> {
-    lexer: lexer::Lexer<StringSource<'s>>,
-    recovery: Vec<lexer::TokenKind>,
-    current: lexer::Token,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,298 +27,148 @@ enum Value {
     Number(u32),
 }
 
-impl<'s> Parser<'s> {
-    fn new(source: &'s str) -> Self {
-        let mut lexer = lexer::Lexer::new(StringSource {
-            source: source.chars(),
-            offset: 0,
-        });
-
-        Self {
-            recovery: vec![],
-            current: lexer.next(),
-            lexer,
-        }
-    }
-
-    fn next(&mut self) -> lexer::Token {
-        let token = std::mem::replace(&mut self.current, self.lexer.next());
-
-        token
-    }
-
-    fn string(&mut self) -> Result<StringLit, ()> {
-        if self.current.kind() != TokenKind::String {
-            return Err(());
-        }
-
-        match self.next() {
-            Token::String(s) => Ok(s),
-            _ => unreachable!(),
-        }
-    }
-
-    fn keyword(&mut self, kw: Keyword) -> Result<Span, ()> {
-        if self.current.kind() != TokenKind::Keyword(kw) {
-            return Err(());
-        }
-
-        match self.next() {
-            Token::Keyword(_, s) => Ok(s),
-            _ => unreachable!(),
-        }
-    }
-
-    fn punct(&mut self, p: Punctuation) -> Result<Span, ()> {
-        if self.current.kind() != TokenKind::Punctuation(p) {
-            return Err(());
-        }
-
-        match self.next() {
-            Token::Punctuation(_, s) => Ok(s),
-            _ => unreachable!(),
-        }
-    }
-
-    fn number(&mut self) -> Result<Int, ()> {
-        if self.current.kind() != TokenKind::Int {
-            return Err(());
-        }
-
-        match self.next() {
-            Token::Int(i) => Ok(i),
-            _ => unreachable!(),
-        }
-    }
-
-    fn array(&mut self) -> Result<Vec<Value>, ()> {
-        let l_bracket = self.punct(Punctuation::LBracket)?;
-
-        let mut values = vec![];
-
-        loop {
-            let Ok(value) = self.value() else {
-                if let Ok(r_bracket) = self.punct(Punctuation::RBracket) {
-                    return Ok(values);
-                }
-                if let Ok(comma) = self.punct(Punctuation::Comma) {
-                    continue;
-                }
-                if self.recovery.contains(&self.current.kind()) {
-                    return Ok(values);
-                }
-                self.next();
-                continue;
-            };
-
-            values.push(value);
-
-            let Ok(comma) = self.punct(Punctuation::Comma) else {
-                if let Ok(r_bracket) = self.punct(Punctuation::RBracket) {
-                    return Ok(values);
-                }
-                if let Ok(value) = self.value() {
-                    values.push(value);
-                    continue;
-                }
-                if self.recovery.contains(&self.current.kind()) {
-                    return Ok(values);
-                }
-                self.next();
-                continue;
-            };
-        }
-    }
-
-    fn field(&mut self) -> Result<(String, Value), ()> {
-        let name = self.string()?;
-        let colon = self.punct(Punctuation::Colon).unwrap();
-        let value = self.value().unwrap();
-
-        Ok((name.value, value))
-    }
-
-    fn object(&mut self) -> Result<Vec<(String, Value)>, ()> {
-        let l_brace = self.punct(Punctuation::LBrace)?;
-
-        let mut fields = vec![];
-
-        loop {
-            let Ok(field) = self.field() else {
-                break;
-            };
-            fields.push(field);
-
-            let Ok(comma) = self.punct(Punctuation::Comma) else {
-                break;
-            };
-        }
-
-        let r_brace = self.punct(Punctuation::RBrace).unwrap();
-
-        Ok(fields)
-    }
-
-    fn value(&mut self) -> Result<Value, ()> {
-        self.string()
-            .map(|s| Value::String(s.value))
-            .or_else(|_| self.array().map(Value::Array))
-            .or_else(|_| self.object().map(Value::Object))
-            .or_else(|_| self.number().map(|n| Value::Number(n.value)))
-    }
+enum State {
+    Value,
+    ObjectValue(Vec<(String, Value)>, String),
+    ArrayValue(Vec<Value>),
+    ArrayComma(Vec<Value>),
+    ObjectComma(Vec<(String, Value)>),
+    Name(Vec<(String, Value)>),
+    Colon(Vec<(String, Value)>, String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParseArray {
-    state: ParseArrayState,
-    values: Vec<Value>,
+enum Ctx {
+    Array(Vec<Value>),
+    Object(Vec<(String, Value)>, String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParseArrayState {
-    Comma,
-    Value(ParseValue),
+struct PushParser {
+    state: State,
+    stack: Vec<Ctx>,
 }
 
-impl ParseArray {
-    fn push(mut self, token: Token) -> Result<Vec<Value>, Self> {
-        if self.state == ParseArrayState::Value(ParseValue::None)
-            && token.kind() == TokenKind::Punctuation(Punctuation::RBracket)
-        {
-            return Ok(self.values);
-        }
-
+impl PushParser {
+    fn push(mut self, token: Token) -> Result<Value, Self> {
         match self.state {
-            ParseArrayState::Comma => {
-                if token.kind() != TokenKind::Punctuation(Punctuation::Comma) {
-                    exit(1);
+            State::ArrayValue(mut values) => match token {
+                Token::String(s) => {
+                    values.push(Value::String(s.value));
+                    self.state = State::ArrayComma(values);
+                    Err(self)
                 }
-                self.state = ParseArrayState::Value(ParseValue::None);
-                Err(self)
-            }
-            ParseArrayState::Value(inner) => {
-                match inner.push(token) {
-                    Ok(value) => {
-                        self.values.push(value);
-                        self.state = ParseArrayState::Comma;
-                    }
-                    Err(inner) => {
-                        self.state = ParseArrayState::Value(inner);
-                    }
+                Token::Int(i) => {
+                    values.push(Value::Number(i.value));
+                    self.state = State::ArrayComma(values);
+                    Err(self)
                 }
-                Err(self)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParseObject {
-    state: ParseObjectState,
-    fields: Vec<(String, Value)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParseObjectState {
-    Comma,
-    Field(ParseField),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParseField {
-    None,
-    Colon(String),
-    Value(String, ParseValue),
-}
-
-impl ParseField {
-    fn push(self, token: Token) -> Result<(String, Value), Self> {
-        match self {
-            ParseField::None => match token {
-                Token::String(s) => Err(Self::Colon(s.value)),
+                Token::Punctuation(Punctuation::LBracket, _) => {
+                    self.stack.push(Ctx::Array(values));
+                    self.state = State::ArrayValue(vec![]);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::LBrace, _) => {
+                    self.stack.push(Ctx::Array(values));
+                    self.state = State::Name(vec![]);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::RBracket, _) => {
+                    Self::_reduce(self.stack, Value::Array(values))
+                }
                 _ => exit(1),
             },
-            ParseField::Colon(name) => {
-                if token.kind() != TokenKind::Punctuation(Punctuation::Colon) {
-                    exit(1);
+            State::ObjectValue(mut fields, name) => match token {
+                Token::String(s) => {
+                    fields.push((name, Value::String(s.value)));
+                    self.state = State::ObjectComma(fields);
+                    Err(self)
                 }
-                Err(ParseField::Value(name, ParseValue::None))
-            }
-            ParseField::Value(name, inner) => match inner.push(token) {
-                Ok(value) => Ok((name, value)),
-                Err(inner) => Err(ParseField::Value(name, inner)),
+                Token::Int(i) => {
+                    fields.push((name, Value::Number(i.value)));
+                    self.state = State::ObjectComma(fields);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::LBrace, _) => {
+                    self.stack.push(Ctx::Object(fields, name));
+                    self.state = State::Name(vec![]);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::LBracket, _) => {
+                    self.stack.push(Ctx::Object(fields, name));
+                    self.state = State::ArrayValue(vec![]);
+                    Err(self)
+                }
+                _ => exit(1),
             },
-        }
-    }
-}
-
-impl ParseObject {
-    fn push(mut self, token: Token) -> Result<Vec<(String, Value)>, Self> {
-        if self.state == ParseObjectState::Field(ParseField::None)
-            && token.kind() == TokenKind::Punctuation(Punctuation::RBracket)
-        {
-            return Ok(self.fields);
-        }
-
-        match self.state {
-            ParseObjectState::Comma => {
-                if token.kind() != TokenKind::Punctuation(Punctuation::Comma) {
-                    exit(1);
-                }
-                self.state = ParseObjectState::Field(ParseField::None);
-                Err(self)
-            }
-            ParseObjectState::Field(inner) => {
-                match inner.push(token) {
-                    Ok(value) => {
-                        self.fields.push(value);
-                        self.state = ParseObjectState::Comma;
-                    }
-                    Err(inner) => {
-                        self.state = ParseObjectState::Field(inner);
-                    }
-                }
-                Err(self)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ParseValue {
-    None,
-    Array(Box<ParseArray>),
-    Object(Box<ParseObject>),
-}
-
-impl ParseValue {
-    fn push(mut self, token: Token) -> Result<Value, Self> {
-        match self {
-            ParseValue::None => match token {
+            State::Value => match token {
                 Token::String(s) => Ok(Value::String(s.value)),
                 Token::Int(i) => Ok(Value::Number(i.value)),
                 Token::Punctuation(Punctuation::LBracket, _) => {
-                    Err(Self::Array(Box::new(ParseArray {
-                        state: ParseArrayState::Value(ParseValue::None),
-                        values: vec![],
-                    })))
+                    self.state = State::ArrayValue(vec![]);
+                    Err(self)
                 }
                 Token::Punctuation(Punctuation::LBrace, _) => {
-                    Err(Self::Object(Box::new(ParseObject {
-                        state: ParseObjectState::Field(ParseField::None),
-                        fields: vec![],
-                    })))
+                    self.state = State::Name(vec![]);
+                    Err(self)
                 }
                 _ => exit(1),
             },
-            ParseValue::Array(mut inner) => match inner.push(token) {
-                Ok(value) => Ok(Value::Array(value)),
-                Err(inner) => Err(Self::Array(Box::new(inner))),
+            State::ArrayComma(values) => match token {
+                Token::Punctuation(Punctuation::Comma, _) => {
+                    self.state = State::ArrayValue(values);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::RBracket, _) => {
+                    Self::_reduce(self.stack, Value::Array(values))
+                }
+                _ => exit(1),
             },
-            ParseValue::Object(mut inner) => match inner.push(token) {
-                Ok(value) => Ok(Value::Object(value)),
-                Err(inner) => Err(Self::Object(Box::new(inner))),
+            State::ObjectComma(fields) => match token {
+                Token::Punctuation(Punctuation::Comma, _) => {
+                    self.state = State::Name(fields);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::RBrace, _) => {
+                    Self::_reduce(self.stack, Value::Object(fields))
+                }
+                _ => exit(1),
             },
+            State::Name(fields) => match token {
+                Token::String(s) => {
+                    self.state = State::Colon(fields, s.value);
+                    Err(self)
+                }
+                Token::Punctuation(Punctuation::RBrace, _) => {
+                    Self::_reduce(self.stack, Value::Object(fields))
+                }
+                _ => exit(1),
+            },
+            State::Colon(fields, name) => match token {
+                Token::Punctuation(Punctuation::Colon, _) => {
+                    self.state = State::ObjectValue(fields, name);
+                    Err(self)
+                }
+                _ => exit(1),
+            },
+        }
+    }
+
+    fn _reduce(mut stack: Vec<Ctx>, value: Value) -> Result<Value, Self> {
+        match stack.pop() {
+            Some(Ctx::Array(mut values)) => {
+                values.push(value);
+                Err(Self {
+                    state: State::ArrayComma(values),
+                    stack,
+                })
+            }
+            Some(Ctx::Object(mut fields, name)) => {
+                fields.push((name, value));
+                Err(Self {
+                    state: State::ObjectComma(fields),
+                    stack,
+                })
+            }
+            None => Ok(value),
         }
     }
 }
@@ -335,13 +178,11 @@ fn main() {
 
     let text = fs::read_to_string(&path).unwrap();
 
-    fn parse(text: &str) -> Value {
-        let mut lexer = Lexer::new(StringSource {
-            source: text.chars(),
-            offset: 0,
-        });
-
-        let mut value_parser = ParseValue::None;
+    fn parse(lexer: &mut Lexer<StringSource>) -> Value {
+        let mut value_parser = PushParser {
+            state: State::Value,
+            stack: vec![],
+        };
         let value = loop {
             match value_parser.push(lexer.next()) {
                 Ok(value) => {
@@ -356,14 +197,21 @@ fn main() {
         value
     }
 
-    let value = parse(&text);
+    let mut lexer = Lexer::new(StringSource {
+        source: text.chars(),
+    });
+    let value = parse(&mut lexer);
 
     println!("{:?}", value);
 
     let mut duration = Duration::ZERO;
     for _ in 0..100 {
+        // let start = Instant::now();
+        let mut lexer = Lexer::new(StringSource {
+            source: text.chars(),
+        });
         let start = Instant::now();
-        parse(&text);
+        parse(&mut lexer);
         duration += start.elapsed();
     }
     println!("{:?}", duration);
