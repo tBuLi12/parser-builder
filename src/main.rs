@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    mem::ManuallyDrop,
     process::exit,
     str::Chars,
     time::{Duration, Instant},
@@ -29,17 +30,25 @@ enum Value {
 
 enum State {
     Value,
-    ObjectValue(Vec<(String, Value)>, String),
-    ArrayValue(Vec<Value>),
-    ArrayComma(Vec<Value>),
-    ObjectComma(Vec<(String, Value)>),
-    Name(Vec<(String, Value)>),
-    Colon(Vec<(String, Value)>, String),
+    ObjectValue, // (Vec<(String, Value)>, String),
+    ArrayValue,  // (Vec<Value>),
+    ArrayComma,  // (Vec<Value>),
+    ObjectComma, // (Vec<(String, Value)>),
+    Name,        //(Vec<(String, Value)>),
+    Colon,       //(Vec<(String, Value)>, String),
 }
 
-enum Ctx {
-    Array(Vec<Value>),
-    Object(Vec<(String, Value)>, String),
+union Ctx {
+    marker: Marker,
+    array: ManuallyDrop<Vec<Value>>,
+    object: ManuallyDrop<Vec<(String, Value)>>,
+    name: ManuallyDrop<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Object,
+    Array,
 }
 
 struct PushParser {
@@ -50,51 +59,100 @@ struct PushParser {
 impl PushParser {
     fn push(mut self, token: Token) -> Result<Value, Self> {
         match self.state {
-            State::ArrayValue(mut values) => match token {
+            State::ArrayValue => match token {
                 Token::String(s) => {
-                    values.push(Value::String(s.value));
-                    self.state = State::ArrayComma(values);
+                    unsafe {
+                        self.stack
+                            .last_mut()
+                            .unwrap()
+                            .array
+                            .push(Value::String(s.value));
+                    }
+                    self.state = State::ArrayComma;
                     Err(self)
                 }
                 Token::Int(i) => {
-                    values.push(Value::Number(i.value));
-                    self.state = State::ArrayComma(values);
+                    unsafe {
+                        self.stack
+                            .last_mut()
+                            .unwrap()
+                            .array
+                            .push(Value::Number(i.value));
+                    }
+                    self.state = State::ArrayComma;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::LBracket, _) => {
-                    self.stack.push(Ctx::Array(values));
-                    self.state = State::ArrayValue(vec![]);
+                    self.stack.push(Ctx {
+                        marker: Marker::Array,
+                    });
+                    self.stack.push(Ctx {
+                        array: ManuallyDrop::new(vec![]),
+                    });
+                    self.state = State::ArrayValue;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::LBrace, _) => {
-                    self.stack.push(Ctx::Array(values));
-                    self.state = State::Name(vec![]);
+                    self.stack.push(Ctx {
+                        marker: Marker::Array,
+                    });
+                    self.stack.push(Ctx {
+                        object: ManuallyDrop::new(vec![]),
+                    });
+                    self.state = State::Name;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::RBracket, _) => {
-                    Self::_reduce(self.stack, Value::Array(values))
+                    let value = Value::Array(unsafe {
+                        ManuallyDrop::into_inner(self.stack.pop().unwrap().array)
+                    });
+                    Self::_reduce(self.stack, value)
                 }
                 _ => exit(1),
             },
-            State::ObjectValue(mut fields, name) => match token {
+            State::ObjectValue => match token {
                 Token::String(s) => {
-                    fields.push((name, Value::String(s.value)));
-                    self.state = State::ObjectComma(fields);
+                    let name = unsafe { ManuallyDrop::into_inner(self.stack.pop().unwrap().name) };
+                    unsafe {
+                        self.stack
+                            .last_mut()
+                            .unwrap()
+                            .object
+                            .push((name, Value::String(s.value)));
+                    }
+                    self.state = State::ObjectComma;
                     Err(self)
                 }
                 Token::Int(i) => {
-                    fields.push((name, Value::Number(i.value)));
-                    self.state = State::ObjectComma(fields);
+                    let name = unsafe { ManuallyDrop::into_inner(self.stack.pop().unwrap().name) };
+                    unsafe {
+                        self.stack
+                            .last_mut()
+                            .unwrap()
+                            .object
+                            .push((name, Value::Number(i.value)));
+                    }
+                    self.state = State::ObjectComma;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::LBrace, _) => {
-                    self.stack.push(Ctx::Object(fields, name));
-                    self.state = State::Name(vec![]);
+                    self.stack.push(Ctx {
+                        marker: Marker::Object,
+                    });
+                    self.stack.push(Ctx {
+                        object: ManuallyDrop::new(vec![]),
+                    });
+                    self.state = State::Name;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::LBracket, _) => {
-                    self.stack.push(Ctx::Object(fields, name));
-                    self.state = State::ArrayValue(vec![]);
+                    self.stack.push(Ctx {
+                        marker: Marker::Object,
+                    });
+                    self.stack.push(Ctx {
+                        array: ManuallyDrop::new(vec![]),
+                    });
+                    self.state = State::ArrayValue;
                     Err(self)
                 }
                 _ => exit(1),
@@ -103,48 +161,66 @@ impl PushParser {
                 Token::String(s) => Ok(Value::String(s.value)),
                 Token::Int(i) => Ok(Value::Number(i.value)),
                 Token::Punctuation(Punctuation::LBracket, _) => {
-                    self.state = State::ArrayValue(vec![]);
+                    self.stack.push(Ctx {
+                        array: ManuallyDrop::new(vec![]),
+                    });
+                    self.state = State::ArrayValue;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::LBrace, _) => {
-                    self.state = State::Name(vec![]);
+                    self.stack.push(Ctx {
+                        object: ManuallyDrop::new(vec![]),
+                    });
+                    self.state = State::Name;
                     Err(self)
                 }
                 _ => exit(1),
             },
-            State::ArrayComma(values) => match token {
+            State::ArrayComma => match token {
                 Token::Punctuation(Punctuation::Comma, _) => {
-                    self.state = State::ArrayValue(values);
+                    self.state = State::ArrayValue;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::RBracket, _) => {
-                    Self::_reduce(self.stack, Value::Array(values))
+                    let value = Value::Array(unsafe {
+                        ManuallyDrop::into_inner(self.stack.pop().unwrap().array)
+                    });
+                    Self::_reduce(self.stack, value)
                 }
                 _ => exit(1),
             },
-            State::ObjectComma(fields) => match token {
+            State::ObjectComma => match token {
                 Token::Punctuation(Punctuation::Comma, _) => {
-                    self.state = State::Name(fields);
+                    self.state = State::Name;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::RBrace, _) => {
-                    Self::_reduce(self.stack, Value::Object(fields))
+                    let value = Value::Object(unsafe {
+                        ManuallyDrop::into_inner(self.stack.pop().unwrap().object)
+                    });
+                    Self::_reduce(self.stack, value)
                 }
                 _ => exit(1),
             },
-            State::Name(fields) => match token {
+            State::Name => match token {
                 Token::String(s) => {
-                    self.state = State::Colon(fields, s.value);
+                    self.stack.push(Ctx {
+                        name: ManuallyDrop::new(s.value),
+                    });
+                    self.state = State::Colon;
                     Err(self)
                 }
                 Token::Punctuation(Punctuation::RBrace, _) => {
-                    Self::_reduce(self.stack, Value::Object(fields))
+                    let value = Value::Object(unsafe {
+                        ManuallyDrop::into_inner(self.stack.pop().unwrap().object)
+                    });
+                    Self::_reduce(self.stack, value)
                 }
                 _ => exit(1),
             },
-            State::Colon(fields, name) => match token {
+            State::Colon => match token {
                 Token::Punctuation(Punctuation::Colon, _) => {
-                    self.state = State::ObjectValue(fields, name);
+                    self.state = State::ObjectValue;
                     Err(self)
                 }
                 _ => exit(1),
@@ -154,20 +230,24 @@ impl PushParser {
 
     fn _reduce(mut stack: Vec<Ctx>, value: Value) -> Result<Value, Self> {
         match stack.pop() {
-            Some(Ctx::Array(mut values)) => {
-                values.push(value);
-                Err(Self {
-                    state: State::ArrayComma(values),
-                    stack,
-                })
-            }
-            Some(Ctx::Object(mut fields, name)) => {
-                fields.push((name, value));
-                Err(Self {
-                    state: State::ObjectComma(fields),
-                    stack,
-                })
-            }
+            Some(marker) => match unsafe { marker.marker } {
+                Marker::Object => unsafe {
+                    let name = ManuallyDrop::into_inner(stack.pop().unwrap().name);
+                    stack.last_mut().unwrap().object.push((name, value));
+                    Err(Self {
+                        state: State::ObjectComma,
+                        stack,
+                    })
+                },
+                Marker::Array => unsafe {
+                    stack.last_mut().unwrap().array.push(value);
+                    Err(Self {
+                        state: State::ArrayComma,
+                        stack,
+                    })
+                },
+            },
+
             None => Ok(value),
         }
     }
