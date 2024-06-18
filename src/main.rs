@@ -8,6 +8,7 @@ use std::{
 
 use lexer::{Int, Keyword, Lexer, Punctuation, Source, Span, StringLit, Token, TokenKind};
 
+mod builder;
 mod lexer;
 
 struct StringSource<'s> {
