@@ -1,4 +1,7 @@
-use std::process::{exit, Output};
+use std::{
+    process::{exit, Output},
+    rc::Rc,
+};
 
 use crate::{
     lexer::{Lexer, Punctuation, Token, TokenKind},
@@ -235,10 +238,41 @@ impl<R: Rule> Rule for List<R> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Stack {
+    node: Option<Rc<Node>>,
+}
+
+#[derive(Debug)]
+struct Node {
+    value: Fun,
+    prev: Option<Rc<Node>>,
+}
+
 pub struct Stacks {
-    pub inner: Vec<Vec<Fun>>,
-    stash: Vec<Vec<Fun>>,
+    pub inner: Vec<Stack>,
     current_stack: usize,
+}
+
+impl Stack {
+    pub fn push(&mut self, fun: Fun) {
+        let prev = std::mem::replace(&mut self.node, None);
+        self.node = Some(Rc::new(Node { prev, value: fun }));
+    }
+
+    pub fn pop(&mut self) -> Option<Fun> {
+        let node = std::mem::replace(&mut self.node, None);
+        if let Some(node) = node {
+            self.node = node.prev.clone();
+            Some(node.value)
+        } else {
+            None
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.node.is_none()
+    }
 }
 
 impl Stacks {
@@ -251,15 +285,13 @@ impl Stacks {
     }
 
     pub fn fork_into(&mut self, fun: Fun) {
-        let mut new_stack = self.stash.pop().unwrap_or_else(|| vec![]);
-        self.inner[self.current_stack].clone_into(&mut new_stack);
+        let mut new_stack = self.inner[self.current_stack].clone();
         new_stack.push(fun);
         self.inner.push(new_stack);
     }
 
     pub fn fork(&mut self) {
-        let mut new_stack = self.stash.pop().unwrap_or_else(|| vec![]);
-        self.inner[self.current_stack].clone_into(&mut new_stack);
+        let mut new_stack = self.inner[self.current_stack].clone();
         self.inner.push(new_stack);
     }
 }
@@ -275,8 +307,12 @@ impl<R: Rule> Ctx<R> {
             rule,
             stacks: Stacks {
                 current_stack: 0,
-                inner: vec![vec![Fun(R::push)]],
-                stash: vec![],
+                inner: vec![Stack {
+                    node: Some(Rc::new(Node {
+                        value: Fun(R::push),
+                        prev: None,
+                    })),
+                }],
             },
         }
     }
@@ -296,12 +332,9 @@ impl<R: Rule> Ctx<R> {
         }
 
         let mut okay_idx = 0;
-        self.stacks.inner.retain_mut(|stack| {
+        self.stacks.inner.retain_mut(|_| {
             let keep = okays[okay_idx];
             okay_idx += 1;
-            if !keep {
-                self.stacks.stash.push(std::mem::take(stack));
-            }
             keep
         });
     }
