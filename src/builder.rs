@@ -1,6 +1,9 @@
 use std::process::{exit, Output};
 
-use crate::lexer::{Punctuation, Token, TokenKind};
+use crate::{
+    lexer::{Lexer, Punctuation, Token, TokenKind},
+    StringSource,
+};
 
 type Out = Option<Fun>;
 
@@ -234,6 +237,7 @@ impl<R: Rule> Rule for List<R> {
 
 pub struct Stacks {
     pub inner: Vec<Vec<Fun>>,
+    stash: Vec<Vec<Fun>>,
     current_stack: usize,
 }
 
@@ -247,13 +251,15 @@ impl Stacks {
     }
 
     pub fn fork_into(&mut self, fun: Fun) {
-        let mut new_stack = self.inner[self.current_stack].clone();
+        let mut new_stack = self.stash.pop().unwrap_or_else(|| vec![]);
+        self.inner[self.current_stack].clone_into(&mut new_stack);
         new_stack.push(fun);
         self.inner.push(new_stack);
     }
 
     pub fn fork(&mut self) {
-        let mut new_stack = self.inner[self.current_stack].clone();
+        let mut new_stack = self.stash.pop().unwrap_or_else(|| vec![]);
+        self.inner[self.current_stack].clone_into(&mut new_stack);
         self.inner.push(new_stack);
     }
 }
@@ -270,6 +276,7 @@ impl<R: Rule> Ctx<R> {
             stacks: Stacks {
                 current_stack: 0,
                 inner: vec![vec![Fun(R::push)]],
+                stash: vec![],
             },
         }
     }
@@ -289,9 +296,12 @@ impl<R: Rule> Ctx<R> {
         }
 
         let mut okay_idx = 0;
-        self.stacks.inner.retain(|_| {
+        self.stacks.inner.retain_mut(|stack| {
             let keep = okays[okay_idx];
             okay_idx += 1;
+            if !keep {
+                self.stacks.stash.push(std::mem::take(stack));
+            }
             keep
         });
     }
@@ -304,4 +314,16 @@ impl<R: Rule> Ctx<R> {
             .count()
             > 0
     }
+}
+
+pub fn parse<R: Rule>(lexer: &mut Lexer<StringSource>, rule: R) -> bool {
+    let mut ctx = Ctx::new(rule);
+    let ok = loop {
+        let token = lexer.next();
+        if token.kind() == TokenKind::Eof {
+            break ctx.done();
+        }
+        ctx.feed(token);
+    };
+    ok
 }

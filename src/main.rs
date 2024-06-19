@@ -273,51 +273,36 @@ fn main() {
 
     let text = fs::read_to_string(&path).unwrap();
 
-    fn parse(lexer: &mut Lexer<StringSource>) -> bool {
-        #[derive(Clone, Copy, Debug)]
-        struct ValueRule;
-        impl NamedRule for ValueRule {
-            type Inner = Or<StringRule, Or<NumberRule, Or<ObjectRule, ArrayRule>>>;
-        }
+    #[derive(Clone, Copy, Debug)]
+    struct ValueRule;
+    impl NamedRule for ValueRule {
+        type Inner = Or<StringRule, Or<NumberRule, Or<ObjectRule, ArrayRule>>>;
+    }
 
-        #[derive(Clone, Copy, Debug)]
-        struct PropRule;
-        impl NamedRule for PropRule {
-            type Inner = And<StringRule, And<ColonRule, ValueRule>>;
-        }
+    #[derive(Clone, Copy, Debug)]
+    struct PropRule;
+    impl NamedRule for PropRule {
+        type Inner = And<StringRule, And<ColonRule, ValueRule>>;
+    }
 
-        #[derive(Clone, Copy, Debug)]
-        struct ObjectRule;
-        impl NamedRule for ObjectRule {
-            type Inner =
-                And<LBraceRule, And<PropRule, And<List<And<CommaRule, PropRule>>, RBraceRule>>>;
-        }
+    #[derive(Clone, Copy, Debug)]
+    struct ObjectRule;
+    impl NamedRule for ObjectRule {
+        type Inner =
+            And<LBraceRule, And<PropRule, And<List<And<CommaRule, PropRule>>, RBraceRule>>>;
+    }
 
-        #[derive(Clone, Copy, Debug)]
-        struct ArrayRule;
-        impl NamedRule for ArrayRule {
-            type Inner = And<
-                LBracketRule,
-                And<ValueRule, And<List<And<CommaRule, ValueRule>>, RBracketRule>>,
-            >;
-        }
-
-        let mut ctx = builder::Ctx::new(ValueRule);
-        let ok = loop {
-            let token = lexer.next();
-            if token.kind() == TokenKind::Eof {
-                break ctx.done();
-            }
-            ctx.feed(token);
-        };
-
-        ok
+    #[derive(Clone, Copy, Debug)]
+    struct ArrayRule;
+    impl NamedRule for ArrayRule {
+        type Inner =
+            And<LBracketRule, And<ValueRule, And<List<And<CommaRule, ValueRule>>, RBracketRule>>>;
     }
 
     let mut lexer = Lexer::new(StringSource {
         source: text.chars(),
     });
-    let value = parse(&mut lexer);
+    let value = builder::parse(&mut lexer, ValueRule);
 
     if !value {
         panic!("invalid syntax")
@@ -332,7 +317,7 @@ fn main() {
         });
         lex_duration += start.elapsed();
         let start = Instant::now();
-        parse(&mut lexer);
+        builder::parse(&mut lexer, ValueRule);
         duration += start.elapsed();
     }
     println!("{:?}", lex_duration);
