@@ -6,6 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use builder::{
+    And, ColonRule, CommaRule, LBraceRule, LBracketRule, List, NamedRule, NumberRule, Or,
+    RBraceRule, RBracketRule, StringRule,
+};
 use lexer::{Int, Keyword, Lexer, Punctuation, Source, Span, StringLit, Token, TokenKind};
 
 mod builder;
@@ -269,23 +273,45 @@ fn main() {
 
     let text = fs::read_to_string(&path).unwrap();
 
-    fn parse(lexer: &mut Lexer<StringSource>) -> Value {
-        let mut value_parser = PushParser {
-            state: PushParser::value,
-            stack: vec![],
-        };
-        let value = loop {
-            match value_parser.push(lexer.next()) {
-                Ok(value) => {
-                    break value;
-                }
-                Err(inner) => {
-                    value_parser = inner;
-                }
+    fn parse(lexer: &mut Lexer<StringSource>) -> bool {
+        #[derive(Clone, Copy, Debug)]
+        struct ValueRule;
+        impl NamedRule for ValueRule {
+            type Inner = Or<StringRule, Or<NumberRule, Or<ObjectRule, ArrayRule>>>;
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct PropRule;
+        impl NamedRule for PropRule {
+            type Inner = And<StringRule, And<ColonRule, ValueRule>>;
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct ObjectRule;
+        impl NamedRule for ObjectRule {
+            type Inner =
+                And<LBraceRule, And<PropRule, And<List<And<CommaRule, PropRule>>, RBraceRule>>>;
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct ArrayRule;
+        impl NamedRule for ArrayRule {
+            type Inner = And<
+                LBracketRule,
+                And<ValueRule, And<List<And<CommaRule, ValueRule>>, RBracketRule>>,
+            >;
+        }
+
+        let mut ctx = builder::Ctx::new(ValueRule);
+        let ok = loop {
+            let token = lexer.next();
+            if token.kind() == TokenKind::Eof {
+                break ctx.done();
             }
+            ctx.feed(token);
         };
 
-        value
+        ok
     }
 
     let mut lexer = Lexer::new(StringSource {
@@ -293,7 +319,9 @@ fn main() {
     });
     let value = parse(&mut lexer);
 
-    println!("{:?}", value);
+    if !value {
+        panic!("invalid syntax")
+    }
 
     let mut duration = Duration::ZERO;
     for _ in 0..100 {
