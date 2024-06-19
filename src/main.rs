@@ -324,14 +324,17 @@ fn main() {
     }
 
     let mut duration = Duration::ZERO;
+    let mut lex_duration = Duration::ZERO;
     for _ in 0..100 {
-        // let start = Instant::now();
+        let start = Instant::now();
         let mut lexer = Lexer::new(StringSource {
             source: text.chars(),
         });
+        lex_duration += start.elapsed();
         let start = Instant::now();
         parse(&mut lexer);
         duration += start.elapsed();
     }
+    println!("{:?}", lex_duration);
     println!("{:?}", duration);
 }
