@@ -1,8 +1,10 @@
 use std::{
     env, fs,
+    hint::black_box,
     mem::ManuallyDrop,
     process::exit,
     str::Chars,
+    sync::atomic::fence,
     time::{Duration, Instant},
 };
 
@@ -268,58 +270,128 @@ impl PushParser {
     }
 }
 
+impl Default for Value {
+    fn default() -> Self {
+        Value::Number(0)
+    }
+}
+
 fn main() {
     let path = env::args().nth(1).unwrap();
 
     let text = fs::read_to_string(&path).unwrap();
 
     #[derive(Clone, Copy, Debug)]
+    struct StringValueRule;
+    impl NamedRule for StringValueRule {
+        type Inner = StringRule;
+        type Output = Value;
+
+        fn map(raw: <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            Value::String(raw)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct NumberValueRule;
+    impl NamedRule for NumberValueRule {
+        type Inner = NumberRule;
+        type Output = Value;
+
+        fn map(raw: <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            Value::Number(raw)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
     struct ValueRule;
     impl NamedRule for ValueRule {
-        type Inner = Or<StringRule, Or<NumberRule, Or<ObjectRule, ArrayRule>>>;
+        type Inner = Or<StringValueRule, Or<NumberValueRule, Or<ObjectRule, ArrayRule>>>;
+        type Output = Value;
+
+        fn map(raw: <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            raw
+        }
     }
 
     #[derive(Clone, Copy, Debug)]
     struct PropRule;
     impl NamedRule for PropRule {
         type Inner = And<StringRule, And<ColonRule, ValueRule>>;
+        type Output = (String, Value);
+
+        fn map(raw: <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            (raw.0, raw.1 .1)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct CommaProp;
+    impl NamedRule for CommaProp {
+        type Inner = And<CommaRule, PropRule>;
+        type Output = (String, Value);
+
+        fn map(raw: <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            raw.1
+        }
     }
 
     #[derive(Clone, Copy, Debug)]
     struct ObjectRule;
     impl NamedRule for ObjectRule {
-        type Inner =
-            And<LBraceRule, And<PropRule, And<List<And<CommaRule, PropRule>>, RBraceRule>>>;
+        type Inner = And<LBraceRule, And<PropRule, And<List<CommaProp>, RBraceRule>>>;
+        type Output = Value;
+
+        fn map(
+            (_, (prop, (mut props, _))): <Self::Inner as builder::Rule>::Output,
+        ) -> Self::Output {
+            props.insert(0, prop);
+            Value::Object(props)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct CommaValue;
+    impl NamedRule for CommaValue {
+        type Inner = And<CommaRule, ValueRule>;
+        type Output = Value;
+
+        fn map(raw: <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            raw.1
+        }
     }
 
     #[derive(Clone, Copy, Debug)]
     struct ArrayRule;
     impl NamedRule for ArrayRule {
-        type Inner =
-            And<LBracketRule, And<ValueRule, And<List<And<CommaRule, ValueRule>>, RBracketRule>>>;
+        type Inner = And<LBracketRule, And<ValueRule, And<List<CommaValue>, RBracketRule>>>;
+        type Output = Value;
+
+        fn map((_, (val, (mut vals, _))): <Self::Inner as builder::Rule>::Output) -> Self::Output {
+            vals.insert(0, val);
+            Value::Array(vals)
+        }
     }
 
-    let mut lexer = Lexer::new(StringSource {
+    let tokens = Lexer::lex(StringSource {
         source: text.chars(),
     });
-    let value = builder::parse(&mut lexer, ValueRule);
 
-    if !value {
+    let value = builder::parse_magic_name(tokens.clone(), ValueRule);
+    if value.is_none() {
         panic!("invalid syntax")
     }
 
-    let mut duration = Duration::ZERO;
-    let mut lex_duration = Duration::ZERO;
     for _ in 0..100 {
-        let start = Instant::now();
-        let mut lexer = Lexer::new(StringSource {
-            source: text.chars(),
-        });
-        lex_duration += start.elapsed();
-        let start = Instant::now();
-        builder::parse(&mut lexer, ValueRule);
-        duration += start.elapsed();
+        let tokens = tokens.clone();
+        let (o, d) = builder::parse_magic_name(tokens, ValueRule).unwrap();
     }
-    println!("{:?}", lex_duration);
-    println!("{:?}", duration);
+
+    unsafe {
+        println!("{:?}", DURATION);
+        println!("{:?}", DURATION_2);
+    }
 }
+
+pub static mut DURATION: Duration = Duration::ZERO;
+pub static mut DURATION_2: Duration = Duration::ZERO;

@@ -91,7 +91,7 @@ pub enum Token {
     Eof(Span),
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Copy)]
 pub enum TokenKind {
     Ident,
     Int,
@@ -179,6 +179,28 @@ impl<S: Source> Lexer<S> {
         }
         lexer.tokens = tokens.into_iter();
         lexer
+    }
+
+    pub fn lex(mut source: S) -> Vec<Token> {
+        let first = source.next();
+        let mut lexer = Lexer {
+            messages: vec![],
+            tokens: vec![].into_iter(),
+            source,
+            current: first,
+            offset: 0,
+            column: 0,
+            line: 0,
+        };
+        let mut tokens = vec![];
+
+        loop {
+            let token = lexer._next();
+            if token.kind() == TokenKind::Eof {
+                break tokens;
+            }
+            tokens.push(token);
+        }
     }
 
     pub fn next(&mut self) -> Token {
