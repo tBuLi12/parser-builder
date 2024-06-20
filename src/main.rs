@@ -345,7 +345,7 @@ fn main() {
         fn map(
             (_, (prop, (mut props, _))): <Self::Inner as builder::Rule>::Output,
         ) -> Self::Output {
-            props.insert(0, prop);
+            // props.insert(0, prop);
             Value::Object(props)
         }
     }
